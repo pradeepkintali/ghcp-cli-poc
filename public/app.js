@@ -114,6 +114,7 @@ async function sendPromptStreaming(prompt, model) {
         const decoder = new TextDecoder();
         let fullResponse = '';
         let buffer = '';
+        let firstChunk = true;
         console.log('Starting to read stream...');
 
         while (true) {
@@ -156,6 +157,11 @@ async function sendPromptStreaming(prompt, model) {
                         }
 
                         if (data.chunk) {
+                            // Clear loading indicator on first chunk
+                            if (firstChunk) {
+                                contentDiv.textContent = '';
+                                firstChunk = false;
+                            }
                             fullResponse += data.chunk;
                             contentDiv.textContent = fullResponse;
                             chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -172,9 +178,8 @@ async function sendPromptStreaming(prompt, model) {
         }
     } catch (error) {
         console.error('Error:', error);
-        if (contentDiv.textContent.includes('Thinking...')) {
-            contentDiv.textContent = `Error: ${error.message}`;
-        }
+        contentDiv.textContent = `Error: ${error.message}`;
+        chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 }
 

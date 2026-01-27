@@ -118,47 +118,107 @@ class CopilotService {
 
             console.log("✓ Streaming session created");
 
-            let hasCompleted = false;
-            let hasError = false;
+            return new Promise((resolve, reject) => {
+                let hasCompleted = false;
+                let hasError = false;
+                let hasReceivedDeltas = false; // Track if we've received streaming deltas
 
-            session.on((event) => {
-                try {
-                    console.log("Streaming event:", event.type);
+                // Set a timeout to handle cases where no events are received
+                const timeoutId = setTimeout(() => {
+                    if (!hasCompleted && !hasError) {
+                        console.warn("⚠ Streaming timeout - no completion event received");
+                        hasCompleted = true;
+                        onComplete();
+                        resolve();
+                    }
+                }, 120000); // 2 minute timeout
 
-                    if (event.type === "assistant.message_delta") {
-                        if (!hasCompleted && !hasError) {
-                            console.log("Delta content:", event.data.deltaContent ? event.data.deltaContent.substring(0, 50) : "EMPTY");
-                            onChunk(event.data.deltaContent);
-                        }
-                    }
-                    if (event.type === "session.idle") {
-                        if (!hasCompleted && !hasError) {
-                            hasCompleted = true;
-                            console.log("✓ Stream completed");
-                            onComplete();
-                        }
-                    }
-                    if (event.type === "error") {
-                        if (!hasError) {
-                            hasError = true;
-                            console.error("Stream error event:", event.data);
-                            if (onError) {
-                                onError(new Error(event.data.message || "Unknown error"));
+                session.on((event) => {
+                    try {
+                        // Log full event for debugging
+                        console.log("Streaming event received:", JSON.stringify(event, null, 2).substring(0, 500));
+
+                        const eventType = event.type || event.event || event.kind;
+                        const eventData = event.data || event.payload || event;
+
+                        console.log("Parsed event type:", eventType);
+
+                        if (eventType === "assistant.message_delta" || eventType === "message_delta" || eventType === "delta") {
+                            if (!hasCompleted && !hasError) {
+                                const content = eventData?.deltaContent || eventData?.delta?.content || eventData?.content || eventData?.text || "";
+                                console.log("Delta content:", content ? content.substring(0, 50) : "EMPTY");
+                                if (content) {
+                                    hasReceivedDeltas = true; // Mark that we've received deltas
+                                    onChunk(content);
+                                }
                             }
                         }
+                        else if (eventType === "assistant.message" || eventType === "message") {
+                            // Only send full message if we haven't received any deltas
+                            // This prevents duplicate content when streaming
+                            if (!hasCompleted && !hasError && !hasReceivedDeltas) {
+                                const content = eventData?.content || eventData?.message || eventData?.text || "";
+                                console.log("Full message received (no deltas, sending):", content ? content.substring(0, 100) : "EMPTY");
+                                if (content) {
+                                    onChunk(content);
+                                }
+                            } else {
+                                console.log("Full message received (ignoring, already streamed deltas)");
+                            }
+                        }
+                        else if (eventType === "session.idle" || eventType === "idle" || eventType === "done" || eventType === "complete") {
+                            if (!hasCompleted && !hasError) {
+                                clearTimeout(timeoutId);
+                                hasCompleted = true;
+                                console.log("✓ Stream completed");
+                                onComplete();
+                                resolve();
+                            }
+                        }
+                        else if (eventType === "error") {
+                            if (!hasError) {
+                                clearTimeout(timeoutId);
+                                hasError = true;
+                                console.error("Stream error event:", eventData);
+                                const error = new Error(eventData?.message || eventData?.error || "Unknown error");
+                                if (onError) {
+                                    onError(error);
+                                }
+                                reject(error);
+                            }
+                        }
+                        else {
+                            // Log any unhandled event types
+                            console.log("Unhandled streaming event type:", event.type);
+                        }
+                    } catch (error) {
+                        console.error("Error in session event handler:", error);
+                        if (!hasCompleted && !hasError) {
+                            clearTimeout(timeoutId);
+                            hasError = true;
+                            if (onError) {
+                                onError(error);
+                            }
+                            reject(error);
+                        }
                     }
-                } catch (error) {
-                    console.error("Error in session event handler:", error);
-                    if (!hasCompleted && !hasError && onError) {
-                        hasError = true;
-                        onError(error);
+                });
+
+                console.log("Sending prompt to streaming session...");
+                // Use send() for streaming - sendAndWait() blocks and doesn't emit delta events
+                try {
+                    session.send({ prompt });
+                    console.log("✓ Prompt sent to streaming session (awaiting events...)");
+                } catch (sendError) {
+                    clearTimeout(timeoutId);
+                    hasError = true;
+                    console.error("Error sending prompt:", sendError);
+                    if (onError) {
+                        onError(sendError);
                     }
+                    reject(sendError);
                 }
             });
-
-            console.log("Sending prompt to streaming session...");
-            await session.sendAndWait({ prompt });
-            console.log("✓ Streaming sendAndWait completed");
 
         } catch (error) {
             console.error("Error in sendPromptStreaming:", error);
@@ -166,9 +226,8 @@ class CopilotService {
             if (onError && !error.handled) {
                 error.handled = true;
                 onError(error);
-            } else if (!error.handled) {
-                throw error;
             }
+            throw error;
         }
     }
 

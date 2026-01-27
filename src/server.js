@@ -79,6 +79,18 @@ app.post("/api/chat", async (req, res) => {
 app.post("/api/chat/stream", async (req, res) => {
     let streamEnded = false;
     let keepaliveInterval = null;
+    let hasReceivedChunks = false;
+
+    const endStream = (reason) => {
+        if (!streamEnded) {
+            console.log(`Stream ending: ${reason}`);
+            streamEnded = true;
+            if (keepaliveInterval) {
+                clearInterval(keepaliveInterval);
+                keepaliveInterval = null;
+            }
+        }
+    };
 
     try {
         const { prompt, model } = req.body;
@@ -103,67 +115,79 @@ app.post("/api/chat/stream", async (req, res) => {
         res.write("data: " + JSON.stringify({ processing: true }) + "\n\n");
 
         // Send keepalive comments every 500ms to prevent timeout (aggressive)
-        const keepaliveInterval = setInterval(() => {
+        keepaliveInterval = setInterval(() => {
             if (!streamEnded && !res.destroyed) {
                 try {
                     res.write(": keepalive\n\n");
                 } catch (err) {
                     console.error("Keepalive write error:", err);
-                    clearInterval(keepaliveInterval);
+                    endStream("keepalive error");
                 }
             } else {
                 clearInterval(keepaliveInterval);
             }
         }, 500);
 
-        // Handle client disconnect
+        // Handle client disconnect - only log, don't set streamEnded
+        // The close event fires when request body is done, not when client disconnects for SSE
         req.on("close", () => {
-            console.log("Client disconnected!");
-            streamEnded = true;
-            clearInterval(keepaliveInterval);
+            console.log("Request close event received (this is normal for POST + SSE)");
+        });
+
+        // Only end stream when response is actually closed/errored
+        res.on("close", () => {
+            console.log("Response close event - client disconnected");
+            endStream("response closed");
+        });
+
+        res.on("error", (err) => {
+            console.error("Response error:", err);
+            endStream("response error");
         });
 
         await copilotService.sendPromptStreaming(
             prompt,
             model || "gpt-4.1",
             (chunk) => {
+                hasReceivedChunks = true;
                 // Send chunk to client if stream is still open
                 console.log("onChunk callback called, chunk:", chunk ? chunk.substring(0, 50) : "EMPTY", "streamEnded:", streamEnded, "destroyed:", res.destroyed);
-                if (!streamEnded && !res.destroyed) {
+                if (!streamEnded && !res.destroyed && res.writable) {
                     try {
                         res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
                         console.log("✓ Chunk written to response");
                     } catch (err) {
                         console.error("Error writing chunk:", err);
-                        streamEnded = true;
+                        endStream("write error");
                     }
                 }
             },
             () => {
                 // Send completion signal if stream is still open
-                clearInterval(keepaliveInterval);
-                if (!streamEnded && !res.destroyed) {
+                console.log("onComplete called, streamEnded:", streamEnded, "destroyed:", res.destroyed);
+                if (!streamEnded && !res.destroyed && res.writable) {
                     try {
                         res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
                         res.end();
+                        console.log("✓ Stream completed and ended");
                     } catch (err) {
                         console.error("Error writing completion:", err);
                     }
-                    streamEnded = true;
                 }
+                endStream("completed");
             },
             (error) => {
                 // Handle error if stream is still open
-                clearInterval(keepaliveInterval);
-                if (!streamEnded && !res.destroyed) {
+                console.log("onError called:", error.message, "streamEnded:", streamEnded);
+                if (!streamEnded && !res.destroyed && res.writable) {
                     try {
                         res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
                         res.end();
                     } catch (err) {
                         console.error("Error writing error message:", err);
                     }
-                    streamEnded = true;
                 }
+                endStream("error");
             }
         );
     } catch (error) {
