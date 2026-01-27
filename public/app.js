@@ -33,6 +33,23 @@ function updateMessage(contentDiv, text) {
 }
 
 async function sendPromptNonStreaming(prompt, model) {
+    // Create message div with loading indicator
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message assistant';
+
+    const labelDiv = document.createElement('div');
+    labelDiv.className = 'message-label';
+    labelDiv.textContent = 'Copilot';
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    contentDiv.innerHTML = '<span class="loading"></span>Generating response...';
+
+    messageDiv.appendChild(labelDiv);
+    messageDiv.appendChild(contentDiv);
+    chatContainer.appendChild(messageDiv);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+
     try {
         const response = await fetch('/api/chat', {
             method: 'POST',
@@ -47,10 +64,16 @@ async function sendPromptNonStreaming(prompt, model) {
         }
 
         const data = await response.json();
-        addMessage(data.response, 'assistant');
+
+        // Replace loading indicator with actual response
+        contentDiv.textContent = '';
+        contentDiv.textContent = data.response;
+        chatContainer.scrollTop = chatContainer.scrollHeight;
     } catch (error) {
         console.error('Error:', error);
-        addMessage(`Error: ${error.message}`, 'assistant');
+        contentDiv.textContent = '';
+        contentDiv.textContent = `Error: ${error.message}`;
+        chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 }
 
