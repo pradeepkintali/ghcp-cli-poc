@@ -1,4 +1,4 @@
-# GitHub Copilot Wrapper Service - Azure Container App Deployment with Key Vault
+﻿# GitHub Copilot Wrapper Service - Azure Container App Deployment with Key Vault
 # This script deploys the service using Azure Key Vault for secure credential management
 
 param(
@@ -64,15 +64,30 @@ if (-not $KeyVaultName) {
     Write-Host "Creating new Key Vault: $KeyVaultName" -ForegroundColor Yellow
 
     if (-not $GitHubToken) {
-        Write-Host ""
-        Write-Host "GitHub Personal Access Token is required for first-time setup" -ForegroundColor Red
-        Write-Host "Create one at: https://github.com/settings/tokens" -ForegroundColor Yellow
-        Write-Host "Required scopes: repo, read:org, copilot" -ForegroundColor Yellow
-        Write-Host ""
-        $GitHubToken = Read-Host "Enter your GitHub Personal Access Token" -AsSecureString
-        $GitHubToken = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
-            [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($GitHubToken)
-        )
+        # Check if .env file exists and read GitHub token from it
+        if (Test-Path ".env") {
+            Write-Host "Found .env file, checking for GitHub token..." -ForegroundColor Yellow
+            $envContent = Get-Content ".env" -Raw
+            if ($envContent -match 'GITHUB_TOKEN=([^\r\n]+)') {
+                $GitHubToken = $Matches[1].Trim()
+                if ($GitHubToken -and $GitHubToken -ne "") {
+                    Write-Host "GitHub token found in .env file" -ForegroundColor Green
+                }
+            }
+        }
+
+        # If still no token, prompt the user
+        if (-not $GitHubToken -or $GitHubToken -eq "") {
+            Write-Host ""
+            Write-Host "GitHub Personal Access Token is required for first-time setup" -ForegroundColor Red
+            Write-Host "Create one at: https://github.com/settings/tokens" -ForegroundColor Yellow
+            Write-Host "Required scopes: repo, read:org, copilot" -ForegroundColor Yellow
+            Write-Host ""
+            $GitHubToken = Read-Host "Enter your GitHub Personal Access Token" -AsSecureString
+            $GitHubToken = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($GitHubToken)
+            )
+        }
     }
 
     # Create resource group if needed
@@ -97,6 +112,52 @@ if (-not $KeyVaultName) {
         --output none
 
     Write-Host "Key Vault created and GitHub token stored" -ForegroundColor Green
+} else {
+    # Key Vault exists, check if GitHub token secret exists
+    Write-Host "Using existing Key Vault: $KeyVaultName" -ForegroundColor Green
+    $secretExists = az keyvault secret show --vault-name $KeyVaultName --name "github-token" 2>$null
+
+    if (-not $secretExists) {
+        Write-Host "GitHub token not found in Key Vault, adding it..." -ForegroundColor Yellow
+
+        if (-not $GitHubToken) {
+            # Check if .env file exists and read GitHub token from it
+            if (Test-Path ".env") {
+                Write-Host "Found .env file, checking for GitHub token..." -ForegroundColor Yellow
+                $envContent = Get-Content ".env" -Raw
+                if ($envContent -match 'GITHUB_TOKEN=([^\r\n]+)') {
+                    $GitHubToken = $Matches[1].Trim()
+                    if ($GitHubToken -and $GitHubToken -ne "") {
+                        Write-Host "GitHub token found in .env file" -ForegroundColor Green
+                    }
+                }
+            }
+
+            # If still no token, prompt the user
+            if (-not $GitHubToken -or $GitHubToken -eq "") {
+                Write-Host ""
+                Write-Host "GitHub Personal Access Token is required" -ForegroundColor Red
+                Write-Host "Create one at: https://github.com/settings/tokens" -ForegroundColor Yellow
+                Write-Host "Required scopes: repo, read:org, copilot" -ForegroundColor Yellow
+                Write-Host ""
+                $GitHubToken = Read-Host "Enter your GitHub Personal Access Token" -AsSecureString
+                $GitHubToken = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                    [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($GitHubToken)
+                )
+            }
+        }
+
+        # Store GitHub token in Key Vault
+        az keyvault secret set `
+            --vault-name $KeyVaultName `
+            --name "github-token" `
+            --value $GitHubToken `
+            --output none
+
+        Write-Host "GitHub token stored in Key Vault" -ForegroundColor Green
+    } else {
+        Write-Host "GitHub token already exists in Key Vault" -ForegroundColor Green
+    }
 }
 Write-Host ""
 
@@ -226,9 +287,9 @@ Write-Host "Container App: $CONTAINER_APP_NAME" -ForegroundColor Cyan
 Write-Host "Application URL: https://$APP_URL" -ForegroundColor Green
 Write-Host ""
 Write-Host "Security Features:" -ForegroundColor Yellow
-Write-Host "✓ GitHub credentials stored in Azure Key Vault" -ForegroundColor Green
-Write-Host "✓ Managed identity for secure access" -ForegroundColor Green
-Write-Host "✓ No hardcoded secrets in container" -ForegroundColor Green
+Write-Host "[OK] GitHub credentials stored in Azure Key Vault" -ForegroundColor Green
+Write-Host "[OK] Managed identity for secure access" -ForegroundColor Green
+Write-Host "[OK] No hardcoded secrets in container" -ForegroundColor Green
 Write-Host ""
 Write-Host "To view logs:" -ForegroundColor Yellow
 Write-Host "  az containerapp logs show --name $CONTAINER_APP_NAME --resource-group $ResourceGroup --follow" -ForegroundColor White
@@ -242,41 +303,29 @@ Write-Host "  az group delete --name $ResourceGroup --yes --no-wait" -Foreground
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 
-# Save deployment info
-$deploymentInfo = @"
-Deployment Information (Secure Configuration)
-==============================================
-Resource Group: $ResourceGroup
-Location: $Location
-Container Registry: $ACR_NAME
-ACR Login Server: $ACR_LOGIN_SERVER
-Key Vault: $KeyVaultName
-Managed Identity: $identityName
-Container App Environment: $CONTAINER_APP_ENV
-Container App Name: $CONTAINER_APP_NAME
-Application URL: https://$APP_URL
-
-Security Configuration:
-- GitHub Token: Stored in Azure Key Vault (not in container)
-- Access Method: Managed Identity with Key Vault policy
-- Secret Reference: $secretReference
-
-Deployed: $(Get-Date)
-
-GitHub Token Management:
-------------------------
-View token (requires Key Vault access):
-  az keyvault secret show --vault-name $KeyVaultName --name github-token --query value -o tsv
-
-Update token:
-  az keyvault secret set --vault-name $KeyVaultName --name github-token --value "new_token"
-  az containerapp revision restart --name $CONTAINER_APP_NAME --resource-group $ResourceGroup
-
-Revoke token:
-  Delete from GitHub: https://github.com/settings/tokens
-  Delete from Key Vault: az keyvault secret delete --vault-name $KeyVaultName --name github-token
-"@
+# Save deployment info using array of strings instead of heredoc
+$deploymentInfo = @(
+    "Deployment Information (Secure Configuration)",
+    "==============================================",
+    "Resource Group: $ResourceGroup",
+    "Location: $Location",
+    "Container Registry: $ACR_NAME",
+    "ACR Login Server: $ACR_LOGIN_SERVER",
+    "Key Vault: $KeyVaultName",
+    "Managed Identity: $identityName",
+    "Container App Environment: $CONTAINER_APP_ENV",
+    "Container App Name: $CONTAINER_APP_NAME",
+    "Application URL: https://$APP_URL",
+    "",
+    "Security Configuration:",
+    "  GitHub Token: Stored in Azure Key Vault (not in container)",
+    "  Access Method: Managed Identity with Key Vault policy",
+    "  Secret Reference: $secretReference",
+    "",
+    "Deployed: $(Get-Date)"
+)
 
 $deploymentInfo | Out-File -FilePath "deployment-info-secure.txt" -Encoding UTF8
 
 Write-Host "Deployment information saved to: deployment-info-secure.txt" -ForegroundColor Green
+
