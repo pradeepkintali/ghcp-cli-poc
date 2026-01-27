@@ -77,14 +77,14 @@ if ($token -eq 'ghp_your_token_here' -or $token.Length -lt 20) {
     exit 1
 }
 
-Write-Host "✓ GitHub token found: $($token.Substring(0, 10))..." -ForegroundColor Green
+Write-Host "[OK] GitHub token found: $($token.Substring(0, 10))..." -ForegroundColor Green
 
 # Override port if specified in .env
 if ($envVars.ContainsKey('PORT')) {
     $Port = [int]$envVars['PORT']
 }
 
-Write-Host "✓ Port: $Port" -ForegroundColor Green
+Write-Host "[OK] Port: $Port" -ForegroundColor Green
 Write-Host ""
 
 # Check if Docker is available

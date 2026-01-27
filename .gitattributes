@@ -1,0 +1,13 @@
+# Ensure shell scripts have Unix line endings (LF) even on Windows
+*.sh text eol=lf
+
+# Ensure other text files use the platform's native line endings
+*.js text
+*.json text
+*.md text
+*.txt text
+*.yml text
+*.yaml text
+
+# PowerShell scripts can use Windows line endings
+*.ps1 text eol=crlf

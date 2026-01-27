@@ -1,0 +1,273 @@
+================================================================================
+GitHub Copilot CLI Wrapper - Setup Instructions
+================================================================================
+
+PREREQUISITES
+================================================================================
+
+1. DOCKER DESKTOP
+   - Required: Docker Desktop for Windows
+   - Download: https://www.docker.com/products/docker-desktop/
+   - Installation:
+     * Run the installer
+     * Restart your computer after installation
+     * Launch Docker Desktop from Start menu
+     * Wait for Docker to fully start (check system tray icon)
+
+   - Alternative Install (PowerShell as Admin):
+     winget install Docker.DockerDesktop
+
+   - Verify Installation:
+     docker --version
+     docker run hello-world
+
+   - IMPORTANT: Docker Desktop must be RUNNING before executing scripts
+
+
+2. GITHUB TOKEN
+   - Required: Personal Access Token with Copilot access
+   - Get token at: https://github.com/settings/tokens
+
+   - Required Permissions:
+     * copilot (for Copilot API access)
+     * read:user (for user information)
+
+   - Token should start with: ghp_
+
+
+3. ENVIRONMENT FILE (.env)
+   - Required: .env file in project root
+   - Template location: config/secrets.template.env
+
+   - Setup:
+     1. Copy template:
+        copy config\secrets.template.env .env
+
+     2. Edit .env file and replace placeholders:
+        GITHUB_TOKEN=ghp_your_actual_token_here
+        PORT=3000
+        NODE_ENV=production
+
+
+SETUP STEPS
+================================================================================
+
+STEP 1: Install Docker Desktop
+   - Download from: https://www.docker.com/products/docker-desktop/
+   - Run installer
+   - Restart computer
+   - Launch Docker Desktop and wait for it to start
+
+STEP 2: Create .env File
+   - Copy the template:
+     copy config\secrets.template.env .env
+
+   - Edit .env and add your GitHub token:
+     GITHUB_TOKEN=ghp_your_actual_token_here
+
+STEP 3: Build Docker Image
+   IMPORTANT: You MUST build the image before first run
+
+   .\docker-build.ps1
+
+   Note: The run-with-env.ps1 script will auto-build if image doesn't exist,
+   but it's recommended to build manually first to catch any issues.
+
+STEP 4: Run the Application
+   .\run-with-env.ps1
+
+
+IMPORTANT NOTES FOR WINDOWS USERS
+================================================================================
+
+This project includes a .gitattributes file that ensures shell scripts (.sh)
+always have Unix line endings (LF), even on Windows. This is critical for
+Docker containers to work properly.
+
+If you cloned this repository on Windows:
+- Git should automatically handle line endings based on .gitattributes
+- The docker-entrypoint.sh file will have correct Unix line endings (LF)
+- No manual conversion should be needed
+
+If you encounter line ending issues:
+1. Ensure the .gitattributes file exists in the project root
+2. Re-clone the repository or run: git checkout docker-entrypoint.sh
+3. Rebuild the Docker image: .\docker-build.ps1
+
+
+RUNNING THE APPLICATION
+================================================================================
+
+METHOD 1: Using .env File (Recommended)
+   .\run-with-env.ps1
+
+   Options:
+   - Custom port: .\run-with-env.ps1 -Port 8080
+   - Detached mode: .\run-with-env.ps1 -Detached
+   - Custom env file: .\run-with-env.ps1 -EnvFile "path\to\.env"
+
+METHOD 2: Using GitHub CLI Credentials
+   .\docker-run.ps1
+
+   Prerequisites:
+   - GitHub CLI installed: winget install --id GitHub.cli
+   - Authenticated: gh auth login
+   - Copilot extension: gh extension install github/gh-copilot
+
+
+TROUBLESHOOTING
+================================================================================
+
+ERROR: "Docker is not running or not installed"
+   SOLUTION:
+   1. Check if Docker Desktop is installed
+   2. Launch Docker Desktop from Start menu
+   3. Wait for Docker icon in system tray to stop animating
+   4. Try running the script again
+
+ERROR: "exec /docker-entrypoint.sh: no such file or directory"
+   CAUSE: Windows line endings (CRLF) in docker-entrypoint.sh
+   SOLUTION:
+   1. This has been fixed - .gitattributes ensures correct line endings
+   2. If you still see this error:
+      - Ensure .gitattributes file exists
+      - Run: git checkout docker-entrypoint.sh
+      - Or manually convert: dos2unix docker-entrypoint.sh
+   3. Rebuild the Docker image: .\docker-build.ps1
+   4. Try running again: .\run-with-env.ps1
+
+ERROR: "GITHUB_TOKEN not found in .env"
+   SOLUTION:
+   1. Verify .env file exists in project root
+   2. Check that GITHUB_TOKEN line is uncommented
+   3. Ensure token value is not placeholder
+   4. Token should start with: ghp_ or github_pat_
+
+ERROR: Character encoding issues (broken checkmarks)
+   SOLUTION:
+   - This has been fixed in the scripts
+   - You should see [OK] instead of checkmarks
+   - If you still see issues, re-clone the repository
+
+ERROR: "Docker image not found"
+   SOLUTION:
+   - The script will automatically build the image
+   - Or manually run: .\docker-build.ps1
+
+ERROR: Port already in use
+   SOLUTION:
+   - Use a different port: .\run-with-env.ps1 -Port 8080
+   - Or stop existing container: docker stop copilot-wrapper
+
+ERROR: Container starts but immediately exits
+   SOLUTION:
+   1. Check logs: docker logs copilot-wrapper
+   2. Verify GITHUB_TOKEN is valid in .env
+   3. Ensure Docker Desktop has enough resources
+   4. Try rebuilding: .\docker-build.ps1
+
+
+VERIFYING SETUP
+================================================================================
+
+1. Check Docker is running:
+   docker --version
+   docker ps
+
+2. Check image is built:
+   docker images | findstr copilot-wrapper-service
+
+3. Test the application:
+   - Start: .\run-with-env.ps1
+   - Open browser: http://localhost:3000
+   - Or test with curl/Invoke-WebRequest
+
+4. View logs (if running detached):
+   docker logs -f copilot-wrapper
+
+
+USEFUL COMMANDS
+================================================================================
+
+View running containers:
+   docker ps
+
+Stop the application:
+   docker stop copilot-wrapper
+
+View logs:
+   docker logs -f copilot-wrapper
+
+View logs (follow mode - live updates):
+   docker logs -f copilot-wrapper
+
+Remove container:
+   docker rm copilot-wrapper
+
+Remove image (to rebuild from scratch):
+   docker rmi copilot-wrapper-service
+
+Rebuild image:
+   .\docker-build.ps1
+
+Force rebuild (no cache):
+   docker build --no-cache -t copilot-wrapper-service .
+
+Clean up everything (containers, images, volumes):
+   docker system prune -a
+   (WARNING: This removes ALL unused Docker resources)
+
+
+WHEN TO REBUILD THE DOCKER IMAGE
+================================================================================
+
+You must rebuild the Docker image when:
+- First time setup
+- After modifying Dockerfile
+- After modifying docker-entrypoint.sh
+- After updating dependencies in package.json
+- After fixing line endings issues
+- After pulling new changes from git that affect Docker files
+
+To rebuild:
+   .\docker-build.ps1
+
+Or with no cache (for clean build):
+   docker build --no-cache -t copilot-wrapper-service .
+
+
+AZURE DEPLOYMENT (Optional)
+================================================================================
+
+For Azure deployment with Key Vault:
+   1. Setup Azure secrets: .\config\azure-secrets-setup.ps1
+   2. Deploy to Azure: .\deploy-azure-with-secrets.ps1
+
+
+QUICK START CHECKLIST
+================================================================================
+
+[ ] Docker Desktop installed
+[ ] Docker Desktop is running (check system tray)
+[ ] .gitattributes file exists (ensures correct line endings)
+[ ] .env file created in project root
+[ ] GITHUB_TOKEN added to .env file
+[ ] Token has Copilot access permissions (ghp_ or github_pat_)
+[ ] Docker image built: .\docker-build.ps1
+[ ] Ran: .\run-with-env.ps1
+[ ] Application accessible at http://localhost:3000
+[ ] No errors in container logs: docker logs copilot-wrapper
+
+
+SUPPORT
+================================================================================
+
+Project Repository: Check README.md for more details
+GitHub Token: https://github.com/settings/tokens
+Docker Desktop: https://docs.docker.com/desktop/
+
+
+================================================================================
+Last Updated: 2026-01-27
+Version: 1.1 (Fixed line endings and added Windows-specific instructions)
+================================================================================
