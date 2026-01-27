@@ -6,6 +6,26 @@ const streamToggle = document.getElementById('streamToggle');
 
 let isProcessing = false;
 
+// Session management - each user/browser tab gets their own session
+// Using sessionStorage so each tab has its own session, or localStorage to persist across tabs
+const SESSION_STORAGE_KEY = 'copilot_session_id';
+
+function getSessionId() {
+    return sessionStorage.getItem(SESSION_STORAGE_KEY);
+}
+
+function setSessionId(sessionId) {
+    if (sessionId) {
+        sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+        console.log('Session ID saved:', sessionId);
+    }
+}
+
+function clearSession() {
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    console.log('Session cleared');
+}
+
 function addMessage(content, role) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
@@ -96,12 +116,15 @@ async function sendPromptStreaming(prompt, model) {
 
     try {
         console.log('Starting stream request...');
+        const sessionId = getSessionId();
+        console.log('Current session ID:', sessionId);
+        
         const response = await fetch('/api/chat/stream', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ prompt, model }),
+            body: JSON.stringify({ prompt, model, sessionId }),
         });
 
         console.log('Response received, status:', response.status);
@@ -168,6 +191,10 @@ async function sendPromptStreaming(prompt, model) {
                         }
 
                         if (data.done) {
+                            // Save the sessionId for future messages in this conversation
+                            if (data.sessionId) {
+                                setSessionId(data.sessionId);
+                            }
                             return;
                         }
                     } catch (parseError) {
@@ -221,7 +248,28 @@ promptInput.addEventListener('keypress', (e) => {
     }
 });
 
+// Start new chat - clears session and chat history
+function startNewChat() {
+    clearSession();
+    chatContainer.innerHTML = '';
+    addMessage('Hello! I\'m GitHub Copilot. How can I help you today?', 'assistant');
+    promptInput.focus();
+}
+
+// Attach new chat button if it exists
+const newChatButton = document.getElementById('newChatButton');
+if (newChatButton) {
+    newChatButton.addEventListener('click', startNewChat);
+}
+
 // Add welcome message
 window.addEventListener('load', () => {
     addMessage('Hello! I\'m GitHub Copilot. How can I help you today?', 'assistant');
+    // Log session status
+    const existingSession = getSessionId();
+    if (existingSession) {
+        console.log('Existing session found:', existingSession);
+    } else {
+        console.log('No existing session - will create new one on first message');
+    }
 });

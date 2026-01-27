@@ -38,11 +38,30 @@
             padding: 20px;
             border-radius: 12px 12px 0 0;
             text-align: center;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
         .header h1 {
             font-size: 24px;
             font-weight: 600;
+            flex: 1;
+        }
+
+        .new-chat-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+
+        .new-chat-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
         }
 
         .chat-container {
@@ -230,7 +249,9 @@
 <body>
     <div class="container">
         <div class="header">
+            <div style="width: 90px;"></div>
             <h1>GitHub Copilot Chat</h1>
+            <button id="newChatButton" class="new-chat-btn">New Chat</button>
         </div>
         <div class="chat-container" id="chatContainer"></div>
         <div class="input-container">

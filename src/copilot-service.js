@@ -3,6 +3,7 @@ import { CopilotClient } from "@github/copilot-sdk";
 class CopilotService {
     constructor() {
         this.client = null;
+        this.sessions = new Map(); // Store sessions by sessionId
     }
 
     async initialize() {
@@ -39,9 +40,66 @@ class CopilotService {
         }
     }
 
-    async sendPrompt(prompt, model = "gpt-4.1", streaming = false) {
+    // Create a new session and return its ID
+    async createNewSession(model = "gpt-4.1") {
         await this.initialize();
 
+        const sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+        console.log(`Creating new session: ${sessionId} with model: ${model}`);
+
+        const session = await this.client.createSession({
+            model: model,
+            streaming: true,
+        });
+
+        this.sessions.set(sessionId, {
+            session,
+            model,
+            createdAt: new Date(),
+            messageCount: 0,
+        });
+
+        console.log(`✓ Session ${sessionId} created successfully`);
+        return sessionId;
+    }
+
+    // Get an existing session or create a new one
+    async getOrCreateSession(sessionId, model = "gpt-4.1") {
+        if (sessionId && this.sessions.has(sessionId)) {
+            console.log(`Using existing session: ${sessionId}`);
+            return sessionId;
+        }
+        return await this.createNewSession(model);
+    }
+
+    // Delete a session
+    deleteSession(sessionId) {
+        if (this.sessions.has(sessionId)) {
+            console.log(`Deleting session: ${sessionId}`);
+            this.sessions.delete(sessionId);
+            return true;
+        }
+        return false;
+    }
+
+    // List all active sessions
+    listSessions() {
+        const sessionList = [];
+        for (const [id, data] of this.sessions.entries()) {
+            sessionList.push({
+                id,
+                model: data.model,
+                createdAt: data.createdAt,
+                messageCount: data.messageCount,
+            });
+        }
+        return sessionList;
+    }
+
+    async sendPrompt(prompt, model = "gpt-4.1", streaming = false, sessionId = null) {
+        await this.initialize();
+
+        // For non-streaming, we still create a new session each time for simplicity
         console.log(`Creating session with model: ${model}, streaming: ${streaming}`);
 
         try {
@@ -105,18 +163,40 @@ class CopilotService {
         }
     }
 
-    async sendPromptStreaming(prompt, model = "gpt-4.1", onChunk, onComplete, onError) {
+    async sendPromptStreaming(prompt, model = "gpt-4.1", onChunk, onComplete, onError, sessionId = null) {
         try {
             await this.initialize();
 
-            console.log(`Creating streaming session with model: ${model}`);
+            let session;
+            let currentSessionId = sessionId;
+            let isNewSession = false;
 
-            const session = await this.client.createSession({
-                model: model,
-                streaming: true,
-            });
+            // Check if we have an existing session
+            if (sessionId && this.sessions.has(sessionId)) {
+                console.log(`Using existing session: ${sessionId}`);
+                const sessionData = this.sessions.get(sessionId);
+                session = sessionData.session;
+                sessionData.messageCount++;
+            } else {
+                // Create a new session
+                currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+                console.log(`Creating new streaming session: ${currentSessionId} with model: ${model}`);
 
-            console.log("✓ Streaming session created");
+                session = await this.client.createSession({
+                    model: model,
+                    streaming: true,
+                });
+
+                this.sessions.set(currentSessionId, {
+                    session,
+                    model,
+                    createdAt: new Date(),
+                    messageCount: 1,
+                });
+
+                isNewSession = true;
+                console.log(`✓ Streaming session ${currentSessionId} created`);
+            }
 
             return new Promise((resolve, reject) => {
                 let hasCompleted = false;
@@ -128,8 +208,8 @@ class CopilotService {
                     if (!hasCompleted && !hasError) {
                         console.warn("⚠ Streaming timeout - no completion event received");
                         hasCompleted = true;
-                        onComplete();
-                        resolve();
+                        onComplete(currentSessionId);
+                        resolve(currentSessionId);
                     }
                 }, 120000); // 2 minute timeout
 
@@ -170,9 +250,9 @@ class CopilotService {
                             if (!hasCompleted && !hasError) {
                                 clearTimeout(timeoutId);
                                 hasCompleted = true;
-                                console.log("✓ Stream completed");
-                                onComplete();
-                                resolve();
+                                console.log("✓ Stream completed for session:", currentSessionId);
+                                onComplete(currentSessionId); // Pass sessionId to completion callback
+                                resolve(currentSessionId);
                             }
                         }
                         else if (eventType === "error") {

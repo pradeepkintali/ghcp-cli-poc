@@ -20,6 +20,33 @@ app.get("/health", (req, res) => {
     res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
+// Session management endpoints
+app.post("/api/session/create", async (req, res) => {
+    try {
+        const { model } = req.body;
+        const sessionId = await copilotService.createNewSession(model || "gpt-4.1");
+        res.json({ sessionId });
+    } catch (error) {
+        console.error("Error creating session:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get("/api/sessions", (req, res) => {
+    const sessions = copilotService.listSessions();
+    res.json({ sessions });
+});
+
+app.delete("/api/session/:sessionId", (req, res) => {
+    const { sessionId } = req.params;
+    const deleted = copilotService.deleteSession(sessionId);
+    if (deleted) {
+        res.json({ success: true, message: `Session ${sessionId} deleted` });
+    } else {
+        res.status(404).json({ error: "Session not found" });
+    }
+});
+
 // Send prompt endpoint (non-streaming)
 app.post("/api/chat", async (req, res) => {
     try {
@@ -80,6 +107,7 @@ app.post("/api/chat/stream", async (req, res) => {
     let streamEnded = false;
     let keepaliveInterval = null;
     let hasReceivedChunks = false;
+    let currentSessionId = null;
 
     const endStream = (reason) => {
         if (!streamEnded) {
@@ -93,7 +121,7 @@ app.post("/api/chat/stream", async (req, res) => {
     };
 
     try {
-        const { prompt, model } = req.body;
+        const { prompt, model, sessionId } = req.body;
 
         if (!prompt) {
             return res.status(400).json({ error: "Prompt is required" });
@@ -145,7 +173,7 @@ app.post("/api/chat/stream", async (req, res) => {
             endStream("response error");
         });
 
-        await copilotService.sendPromptStreaming(
+        currentSessionId = await copilotService.sendPromptStreaming(
             prompt,
             model || "gpt-4.1",
             (chunk) => {
@@ -162,14 +190,15 @@ app.post("/api/chat/stream", async (req, res) => {
                     }
                 }
             },
-            () => {
-                // Send completion signal if stream is still open
-                console.log("onComplete called, streamEnded:", streamEnded, "destroyed:", res.destroyed);
+            (returnedSessionId) => {
+                // Send completion signal with sessionId if stream is still open
+                currentSessionId = returnedSessionId;
+                console.log("onComplete called, sessionId:", currentSessionId, "streamEnded:", streamEnded, "destroyed:", res.destroyed);
                 if (!streamEnded && !res.destroyed && res.writable) {
                     try {
-                        res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+                        res.write(`data: ${JSON.stringify({ done: true, sessionId: currentSessionId })}\n\n`);
                         res.end();
-                        console.log("✓ Stream completed and ended");
+                        console.log("✓ Stream completed and ended, sessionId:", currentSessionId);
                     } catch (err) {
                         console.error("Error writing completion:", err);
                     }
@@ -188,7 +217,8 @@ app.post("/api/chat/stream", async (req, res) => {
                     }
                 }
                 endStream("error");
-            }
+            },
+            sessionId // Pass the sessionId from the request
         );
     } catch (error) {
         console.error("Error processing streaming chat request:", error);
