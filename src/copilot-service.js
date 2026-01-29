@@ -1,4 +1,13 @@
 import { CopilotClient } from "@github/copilot-sdk";
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Get the directory path for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SKILLS_DIR = path.resolve(__dirname, '..', 'skills');
+
+console.log('Skills directory:', SKILLS_DIR);
 
 class CopilotService {
     constructor() {
@@ -50,6 +59,7 @@ class CopilotService {
         const session = await this.client.createSession({
             model: model,
             streaming: true,
+            skillDirectories: [SKILLS_DIR],
         });
 
         this.sessions.set(sessionId, {
@@ -106,6 +116,7 @@ class CopilotService {
             const session = await this.client.createSession({
                 model: model,
                 streaming: streaming,
+                skillDirectories: [SKILLS_DIR],
             });
 
             console.log("✓ Session created successfully");
@@ -185,6 +196,7 @@ class CopilotService {
                 session = await this.client.createSession({
                     model: model,
                     streaming: true,
+                    skillDirectories: [SKILLS_DIR],
                 });
 
                 this.sessions.set(currentSessionId, {
@@ -202,6 +214,8 @@ class CopilotService {
                 let hasCompleted = false;
                 let hasError = false;
                 let hasReceivedDeltas = false; // Track if we've received streaming deltas
+                let accumulatedContent = ''; // Track accumulated content to strip prompt
+                let promptStripped = false; // Track if we've already stripped the prompt
 
                 // Set a timeout to handle cases where no events are received
                 const timeoutId = setTimeout(() => {
@@ -225,10 +239,38 @@ class CopilotService {
 
                         if (eventType === "assistant.message_delta" || eventType === "message_delta" || eventType === "delta") {
                             if (!hasCompleted && !hasError) {
-                                const content = eventData?.deltaContent || eventData?.delta?.content || eventData?.content || eventData?.text || "";
+                                let content = eventData?.deltaContent || eventData?.delta?.content || eventData?.content || eventData?.text || "";
                                 console.log("Delta content:", content ? content.substring(0, 50) : "EMPTY");
                                 if (content) {
                                     hasReceivedDeltas = true; // Mark that we've received deltas
+
+                                    // Accumulate content and strip prompt if it appears at the start
+                                    accumulatedContent += content;
+
+                                    if (!promptStripped) {
+                                        // Check if accumulated content starts with the user's prompt
+                                        const normalizedAccumulated = accumulatedContent.trim().toLowerCase();
+                                        const normalizedPrompt = prompt.trim().toLowerCase();
+
+                                        if (normalizedAccumulated.startsWith(normalizedPrompt)) {
+                                            console.log('Detected prompt echo at start, stripping it');
+                                            // Strip the prompt from accumulated content
+                                            accumulatedContent = accumulatedContent.trim().substring(prompt.trim().length).trimStart();
+                                            promptStripped = true;
+                                            // Send the stripped content
+                                            if (accumulatedContent) {
+                                                onChunk(accumulatedContent);
+                                            }
+                                            // Reset accumulated content since we already sent it
+                                            accumulatedContent = '';
+                                            return; // Don't send the original content
+                                        } else if (accumulatedContent.length > prompt.length * 2) {
+                                            // We've accumulated enough content to know the prompt isn't at the start
+                                            promptStripped = true;
+                                        }
+                                    }
+
+                                    // Send the content as-is if prompt already stripped or not detected
                                     onChunk(content);
                                 }
                             }
@@ -237,10 +279,21 @@ class CopilotService {
                             // Only send full message if we haven't received any deltas
                             // This prevents duplicate content when streaming
                             if (!hasCompleted && !hasError && !hasReceivedDeltas) {
-                                const content = eventData?.content || eventData?.message || eventData?.text || "";
+                                let content = eventData?.content || eventData?.message || eventData?.text || "";
                                 console.log("Full message received (no deltas, sending):", content ? content.substring(0, 100) : "EMPTY");
                                 if (content) {
-                                    onChunk(content);
+                                    // Strip prompt from full message if it starts with it
+                                    const normalizedContent = content.trim().toLowerCase();
+                                    const normalizedPrompt = prompt.trim().toLowerCase();
+
+                                    if (normalizedContent.startsWith(normalizedPrompt)) {
+                                        console.log('Detected prompt echo in full message, stripping it');
+                                        content = content.trim().substring(prompt.trim().length).trimStart();
+                                    }
+
+                                    if (content) {
+                                        onChunk(content);
+                                    }
                                 }
                             } else {
                                 console.log("Full message received (ignoring, already streamed deltas)");
@@ -253,6 +306,26 @@ class CopilotService {
                                 console.log("✓ Stream completed for session:", currentSessionId);
                                 onComplete(currentSessionId); // Pass sessionId to completion callback
                                 resolve(currentSessionId);
+                            }
+                        }
+                        else if (eventType === "tool.output" || eventType === "tool_output" || eventType === "tool.result") {
+                            // Handle skill/tool execution outputs
+                            if (!hasCompleted && !hasError) {
+                                const content = eventData?.output || eventData?.result || eventData?.content || eventData?.text || "";
+                                console.log("Tool output:", content ? content.substring(0, 100) : "EMPTY");
+                                if (content) {
+                                    onChunk(content);
+                                }
+                            }
+                        }
+                        else if (eventType === "assistant.status" || eventType === "status" || eventType === "progress") {
+                            // Handle status/progress updates (like validation steps)
+                            if (!hasCompleted && !hasError) {
+                                const content = eventData?.message || eventData?.status || eventData?.content || eventData?.text || "";
+                                console.log("Status update:", content ? content.substring(0, 100) : "EMPTY");
+                                if (content) {
+                                    onChunk(content + '\n');
+                                }
                             }
                         }
                         else if (eventType === "error") {
@@ -268,8 +341,15 @@ class CopilotService {
                             }
                         }
                         else {
-                            // Log any unhandled event types
-                            console.log("Unhandled streaming event type:", event.type);
+                            // Try to extract text content from unhandled events
+                            // This captures skill execution outputs, validation messages, etc.
+                            const content = eventData?.content || eventData?.text || eventData?.message || eventData?.output || "";
+                            if (content && typeof content === 'string' && !hasCompleted && !hasError) {
+                                console.log("Unhandled event has content, sending:", content.substring(0, 100));
+                                onChunk(content);
+                            } else {
+                                console.log("Unhandled streaming event type (no content):", eventType, JSON.stringify(event).substring(0, 200));
+                            }
                         }
                     } catch (error) {
                         console.error("Error in session event handler:", error);

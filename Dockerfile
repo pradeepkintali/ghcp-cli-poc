@@ -32,6 +32,7 @@ RUN npm install -g @github/copilot
 # Copy application files
 COPY src/ ./src/
 COPY public/ ./public/
+COPY skills/ ./skills/
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh /docker-entrypoint.sh
