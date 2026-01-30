@@ -1,13 +1,21 @@
 import { CopilotClient } from "@github/copilot-sdk";
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 // Get the directory path for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SKILLS_DIR = path.resolve(__dirname, '..', 'skills');
+const OUTPUTS_DIR = path.resolve(__dirname, '..', 'outputs');
+
+// Ensure outputs directory exists
+if (!fs.existsSync(OUTPUTS_DIR)) {
+    fs.mkdirSync(OUTPUTS_DIR, { recursive: true });
+}
 
 console.log('Skills directory:', SKILLS_DIR);
+console.log('Outputs directory:', OUTPUTS_DIR);
 
 class CopilotService {
     constructor() {
@@ -19,20 +27,16 @@ class CopilotService {
         if (!this.client) {
             console.log("Initializing Copilot client...");
             try {
-                // Initialize with debug logging enabled
                 this.client = new CopilotClient({
                     logLevel: "debug",
-                    useStdio: true,
                     autoStart: true,
                     autoRestart: true,
                 });
                 console.log("✓ Copilot client created");
 
-                // Start the client explicitly
                 await this.client.start();
                 console.log("✓ Copilot client started");
 
-                // Verify connectivity with ping
                 try {
                     await this.client.ping();
                     console.log("✓ Copilot CLI server is responsive");
@@ -86,6 +90,13 @@ class CopilotService {
     deleteSession(sessionId) {
         if (this.sessions.has(sessionId)) {
             console.log(`Deleting session: ${sessionId}`);
+            const sessionData = this.sessions.get(sessionId);
+            // Destroy the actual copilot session if possible
+            try {
+                sessionData.session.destroy?.();
+            } catch (e) {
+                console.warn("Could not destroy session:", e.message);
+            }
             this.sessions.delete(sessionId);
             return true;
         }
@@ -109,7 +120,6 @@ class CopilotService {
     async sendPrompt(prompt, model = "gpt-4.1", streaming = false, sessionId = null) {
         await this.initialize();
 
-        // For non-streaming, we still create a new session each time for simplicity
         console.log(`Creating session with model: ${model}, streaming: ${streaming}`);
 
         try {
@@ -124,43 +134,44 @@ class CopilotService {
             return new Promise((resolve, reject) => {
                 let fullResponse = "";
                 const chunks = [];
-                let receivedIdle = false;
 
+                // Use generic event handler (compatible with all SDK versions)
                 session.on((event) => {
-                    console.log("Session event:", event.type);
-
+                    console.log("Event received:", event.type);
+                    
                     if (event.type === "assistant.message_delta") {
-                        fullResponse += event.data.deltaContent;
-                        chunks.push(event.data.deltaContent);
+                        const content = event.data?.deltaContent || "";
+                        if (content) {
+                            fullResponse += content;
+                            chunks.push(content);
+                            console.log("Delta received:", content.substring(0, 50));
+                        }
                     }
-                    if (event.type === "assistant.message") {
-                        // Full message event (non-streaming)
-                        fullResponse = event.data.content || "";
-                        console.log("✓ Received full message:", fullResponse.substring(0, 100));
+                    else if (event.type === "assistant.message") {
+                        // Final complete message
+                        const content = event.data?.content || "";
+                        if (content && !fullResponse) {
+                            fullResponse = content;
+                        }
+                        console.log("✓ Received full message:", content.substring(0, 100));
                     }
-                    if (event.type === "session.idle") {
-                        receivedIdle = true;
+                    else if (event.type === "session.idle") {
                         console.log("✓ Session idle, resolving with response");
                         resolve({ fullResponse, chunks });
                     }
-                    if (event.type === "error") {
+                    else if (event.type === "session.error") {
                         console.error("Session error event:", event.data);
-                        reject(new Error(event.data.message || "Unknown error"));
+                        reject(new Error(event.data?.message || "Unknown error"));
                     }
                 });
 
                 console.log("Sending prompt to session...");
                 session.sendAndWait({ prompt })
-                    .then(() => {
+                    .then((result) => {
                         console.log("✓ sendAndWait completed");
-                        // If we didn't receive idle event, wait a bit
-                        if (!receivedIdle) {
-                            setTimeout(() => {
-                                if (!receivedIdle) {
-                                    console.log("No idle event received, resolving anyway");
-                                    resolve({ fullResponse, chunks });
-                                }
-                            }, 1000);
+                        // If no response collected via events, use the result
+                        if (!fullResponse && result?.data?.content) {
+                            fullResponse = result.data.content;
                         }
                     })
                     .catch((error) => {
@@ -179,205 +190,212 @@ class CopilotService {
             await this.initialize();
 
             let session;
-            let currentSessionId = sessionId;
-            let isNewSession = false;
+            let currentSessionId;
 
-            // Check if we have an existing session
-            if (sessionId && this.sessions.has(sessionId)) {
-                console.log(`Using existing session: ${sessionId}`);
-                const sessionData = this.sessions.get(sessionId);
-                session = sessionData.session;
-                sessionData.messageCount++;
-            } else {
-                // Create a new session
-                currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-                console.log(`Creating new streaming session: ${currentSessionId} with model: ${model}`);
+            // Always create a new session for streaming to ensure streaming: true is applied
+            // Session reuse can cause issues with event handlers and streaming flags
+            currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+            console.log(`Creating new streaming session: ${currentSessionId} with model: ${model}`);
 
-                session = await this.client.createSession({
-                    model: model,
-                    streaming: true,
-                    skillDirectories: [SKILLS_DIR],
-                });
+            session = await this.client.createSession({
+                model: model,
+                streaming: true,
+                skillDirectories: [SKILLS_DIR],
+            });
 
-                this.sessions.set(currentSessionId, {
-                    session,
-                    model,
-                    createdAt: new Date(),
-                    messageCount: 1,
-                });
+            this.sessions.set(currentSessionId, {
+                session,
+                model,
+                createdAt: new Date(),
+                messageCount: 1,
+            });
 
-                isNewSession = true;
-                console.log(`✓ Streaming session ${currentSessionId} created`);
-            }
+            console.log(`✓ Streaming session ${currentSessionId} created with streaming: true`);
 
             return new Promise((resolve, reject) => {
                 let hasCompleted = false;
                 let hasError = false;
-                let hasReceivedDeltas = false; // Track if we've received streaming deltas
-                let accumulatedContent = ''; // Track accumulated content to strip prompt
-                let promptStripped = false; // Track if we've already stripped the prompt
+                let hasReceivedContent = false;
+                let fileWatcher = null;
+                let notifiedFiles = new Set();
 
-                // Set a timeout to handle cases where no events are received
+                // Track existing files to detect new ones
+                const existingFiles = new Set();
+                try {
+                    fs.readdirSync(OUTPUTS_DIR).forEach(file => existingFiles.add(file));
+                } catch (e) {
+                    console.log("Could not read outputs dir:", e.message);
+                }
+
+                // Watch for new files in outputs directory
+                try {
+                    fileWatcher = fs.watch(OUTPUTS_DIR, (eventType, filename) => {
+                        if (eventType === 'rename' && filename && !existingFiles.has(filename) && !notifiedFiles.has(filename)) {
+                            setTimeout(() => {
+                                try {
+                                    const filePath = path.join(OUTPUTS_DIR, filename);
+                                    const stats = fs.statSync(filePath);
+                                    if (stats.size > 0 && !notifiedFiles.has(filename)) {
+                                        notifiedFiles.add(filename);
+                                        console.log(`✓ New file detected: ${filename} (${stats.size} bytes)`);
+                                        const downloadMessage = `\n\n---\n\n✅ **Your file is ready!**\n\n📥 **[Click here to download: ${filename}](/outputs/${encodeURIComponent(filename)})**\n\n💡 *Right-click and "Save As" to save the file, or click to view in your browser.*\n\n---\n`;
+                                        if (!hasCompleted && !hasError) {
+                                            onChunk(downloadMessage);
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.log("File not ready yet:", e.message);
+                                }
+                            }, 500);
+                        }
+                    });
+                } catch (e) {
+                    console.log("Could not set up file watcher:", e.message);
+                }
+
+                const cleanup = () => {
+                    if (fileWatcher) {
+                        fileWatcher.close();
+                        fileWatcher = null;
+                    }
+                };
+
+                const checkForNewFiles = () => {
+                    try {
+                        const currentFiles = fs.readdirSync(OUTPUTS_DIR);
+                        currentFiles.forEach(file => {
+                            if (!existingFiles.has(file) && !notifiedFiles.has(file)) {
+                                const filePath = path.join(OUTPUTS_DIR, file);
+                                const stats = fs.statSync(filePath);
+                                if (stats.size > 0) {
+                                    notifiedFiles.add(file);
+                                    console.log(`✓ File found: ${file} (${stats.size} bytes)`);
+                                    const downloadMessage = `\n\n---\n\n✅ **Your file is ready!**\n\n📥 **[Click here to download: ${file}](/outputs/${encodeURIComponent(file)})**\n\n💡 *Right-click and "Save As" to save the file, or click to view in your browser.*\n\n---\n`;
+                                    onChunk(downloadMessage);
+                                }
+                            }
+                        });
+                    } catch (e) {
+                        console.log("Could not check for new files:", e.message);
+                    }
+                };
+
+                // Timeout for long-running requests (5 minutes)
                 const timeoutId = setTimeout(() => {
                     if (!hasCompleted && !hasError) {
-                        console.warn("⚠ Streaming timeout - no completion event received");
+                        console.warn("⚠ Streaming timeout - completing request");
+                        checkForNewFiles();
+                        cleanup();
                         hasCompleted = true;
                         onComplete(currentSessionId);
                         resolve(currentSessionId);
                     }
-                }, 120000); // 2 minute timeout
+                }, 300000);
 
+                // Use generic event handler (compatible with all SDK versions)
+                console.log("Registering event handler on session...");
                 session.on((event) => {
                     try {
-                        // Log full event for debugging
-                        console.log("Streaming event received:", JSON.stringify(event, null, 2).substring(0, 500));
-
-                        const eventType = event.type || event.event || event.kind;
-                        const eventData = event.data || event.payload || event;
-
-                        console.log("Parsed event type:", eventType);
-
-                        if (eventType === "assistant.message_delta" || eventType === "message_delta" || eventType === "delta") {
+                        console.log("========================================");
+                        console.log("Event received:", event.type);
+                        console.log("Event data:", JSON.stringify(event.data || {}).substring(0, 200));
+                        console.log("========================================");
+                        
+                        if (event.type === "assistant.message_delta") {
                             if (!hasCompleted && !hasError) {
-                                let content = eventData?.deltaContent || eventData?.delta?.content || eventData?.content || eventData?.text || "";
-                                console.log("Delta content:", content ? content.substring(0, 50) : "EMPTY");
+                                const content = event.data?.deltaContent || "";
                                 if (content) {
-                                    hasReceivedDeltas = true; // Mark that we've received deltas
-
-                                    // Accumulate content and strip prompt if it appears at the start
-                                    accumulatedContent += content;
-
-                                    if (!promptStripped) {
-                                        // Check if accumulated content starts with the user's prompt
-                                        const normalizedAccumulated = accumulatedContent.trim().toLowerCase();
-                                        const normalizedPrompt = prompt.trim().toLowerCase();
-
-                                        if (normalizedAccumulated.startsWith(normalizedPrompt)) {
-                                            console.log('Detected prompt echo at start, stripping it');
-                                            // Strip the prompt from accumulated content
-                                            accumulatedContent = accumulatedContent.trim().substring(prompt.trim().length).trimStart();
-                                            promptStripped = true;
-                                            // Send the stripped content
-                                            if (accumulatedContent) {
-                                                onChunk(accumulatedContent);
-                                            }
-                                            // Reset accumulated content since we already sent it
-                                            accumulatedContent = '';
-                                            return; // Don't send the original content
-                                        } else if (accumulatedContent.length > prompt.length * 2) {
-                                            // We've accumulated enough content to know the prompt isn't at the start
-                                            promptStripped = true;
-                                        }
-                                    }
-
-                                    // Send the content as-is if prompt already stripped or not detected
+                                    hasReceivedContent = true;
+                                    console.log("Streaming delta:", content.substring(0, 50));
                                     onChunk(content);
                                 }
                             }
                         }
-                        else if (eventType === "assistant.message" || eventType === "message") {
-                            // Only send full message if we haven't received any deltas
-                            // This prevents duplicate content when streaming
-                            if (!hasCompleted && !hasError && !hasReceivedDeltas) {
-                                let content = eventData?.content || eventData?.message || eventData?.text || "";
-                                console.log("Full message received (no deltas, sending):", content ? content.substring(0, 100) : "EMPTY");
+                        else if (event.type === "assistant.reasoning_delta") {
+                            if (!hasCompleted && !hasError) {
+                                const content = event.data?.deltaContent || "";
                                 if (content) {
-                                    // Strip prompt from full message if it starts with it
-                                    const normalizedContent = content.trim().toLowerCase();
-                                    const normalizedPrompt = prompt.trim().toLowerCase();
-
-                                    if (normalizedContent.startsWith(normalizedPrompt)) {
-                                        console.log('Detected prompt echo in full message, stripping it');
-                                        content = content.trim().substring(prompt.trim().length).trimStart();
-                                    }
-
-                                    if (content) {
-                                        onChunk(content);
-                                    }
+                                    hasReceivedContent = true;
+                                    console.log("Reasoning delta:", content.substring(0, 50));
+                                    // Send reasoning to client so they see real-time progress
+                                    onChunk(content);
                                 }
-                            } else {
-                                console.log("Full message received (ignoring, already streamed deltas)");
                             }
                         }
-                        else if (eventType === "session.idle" || eventType === "idle" || eventType === "done" || eventType === "complete") {
+                        else if (event.type === "assistant.message") {
+                            // Final complete message - only use if no deltas received
+                            if (!hasCompleted && !hasError && !hasReceivedContent) {
+                                const content = event.data?.content || "";
+                                if (content) {
+                                    console.log("Full message (no streaming):", content.substring(0, 100));
+                                    onChunk(content);
+                                }
+                            }
+                        }
+                        else if (event.type === "tool.execution_start") {
                             if (!hasCompleted && !hasError) {
+                                const toolName = event.data?.toolName || "tool";
+                                console.log(`Tool execution started: ${toolName}`);
+                            }
+                        }
+                        else if (event.type === "tool.execution_complete") {
+                            if (!hasCompleted && !hasError) {
+                                const toolCallId = event.data?.toolCallId || "";
+                                console.log(`Tool execution complete: ${toolCallId}`);
+                            }
+                        }
+                        else if (event.type === "session.idle") {
+                            if (!hasCompleted && !hasError) {
+                                console.log("✓ Session idle - stream complete");
                                 clearTimeout(timeoutId);
-                                hasCompleted = true;
-                                console.log("✓ Stream completed for session:", currentSessionId);
-                                onComplete(currentSessionId); // Pass sessionId to completion callback
-                                resolve(currentSessionId);
+                                
+                                // Small delay to ensure files are written
+                                setTimeout(() => {
+                                    checkForNewFiles();
+                                    cleanup();
+                                    hasCompleted = true;
+                                    console.log("✓ Stream completed for session:", currentSessionId);
+                                    onComplete(currentSessionId);
+                                    resolve(currentSessionId);
+                                }, 1000);
                             }
                         }
-                        else if (eventType === "tool.output" || eventType === "tool_output" || eventType === "tool.result") {
-                            // Handle skill/tool execution outputs
-                            if (!hasCompleted && !hasError) {
-                                const content = eventData?.output || eventData?.result || eventData?.content || eventData?.text || "";
-                                console.log("Tool output:", content ? content.substring(0, 100) : "EMPTY");
-                                if (content) {
-                                    onChunk(content);
-                                }
-                            }
-                        }
-                        else if (eventType === "assistant.status" || eventType === "status" || eventType === "progress") {
-                            // Handle status/progress updates (like validation steps)
-                            if (!hasCompleted && !hasError) {
-                                const content = eventData?.message || eventData?.status || eventData?.content || eventData?.text || "";
-                                console.log("Status update:", content ? content.substring(0, 100) : "EMPTY");
-                                if (content) {
-                                    onChunk(content + '\n');
-                                }
-                            }
-                        }
-                        else if (eventType === "error") {
+                        else if (event.type === "session.error") {
                             if (!hasError) {
                                 clearTimeout(timeoutId);
+                                cleanup();
                                 hasError = true;
-                                console.error("Stream error event:", eventData);
-                                const error = new Error(eventData?.message || eventData?.error || "Unknown error");
+                                console.error("Session error:", event.data);
+                                const error = new Error(event.data?.message || "Session error");
                                 if (onError) {
                                     onError(error);
                                 }
                                 reject(error);
                             }
                         }
-                        else {
-                            // Try to extract text content from unhandled events
-                            // This captures skill execution outputs, validation messages, etc.
-                            const content = eventData?.content || eventData?.text || eventData?.message || eventData?.output || "";
-                            if (content && typeof content === 'string' && !hasCompleted && !hasError) {
-                                console.log("Unhandled event has content, sending:", content.substring(0, 100));
-                                onChunk(content);
-                            } else {
-                                console.log("Unhandled streaming event type (no content):", eventType, JSON.stringify(event).substring(0, 200));
-                            }
-                        }
-                    } catch (error) {
-                        console.error("Error in session event handler:", error);
-                        if (!hasCompleted && !hasError) {
-                            clearTimeout(timeoutId);
-                            hasError = true;
-                            if (onError) {
-                                onError(error);
-                            }
-                            reject(error);
-                        }
+                    } catch (err) {
+                        console.error("Error in event handler:", err);
                     }
                 });
 
+                // Send the prompt using send() for streaming (not sendAndWait)
                 console.log("Sending prompt to streaming session...");
-                // Use send() for streaming - sendAndWait() blocks and doesn't emit delta events
-                try {
-                    session.send({ prompt });
-                    console.log("✓ Prompt sent to streaming session (awaiting events...)");
-                } catch (sendError) {
-                    clearTimeout(timeoutId);
-                    hasError = true;
-                    console.error("Error sending prompt:", sendError);
-                    if (onError) {
-                        onError(sendError);
-                    }
-                    reject(sendError);
-                }
+                console.log("Prompt:", prompt.substring(0, 100));
+                session.send({ prompt })
+                    .then((messageId) => {
+                        console.log(`✓ Prompt sent successfully, message ID: ${messageId}`);
+                        console.log("Waiting for streaming events...");
+                    })
+                    .catch((error) => {
+                        clearTimeout(timeoutId);
+                        cleanup();
+                        hasError = true;
+                        console.error("Error sending prompt:", error);
+                        if (onError) {
+                            onError(error);
+                        }
+                        reject(error);
+                    });
             });
 
         } catch (error) {
@@ -395,6 +413,16 @@ class CopilotService {
         if (this.client) {
             console.log("Stopping Copilot client...");
             try {
+                // Destroy all sessions first
+                for (const [id, data] of this.sessions.entries()) {
+                    try {
+                        await data.session.destroy?.();
+                    } catch (e) {
+                        console.warn(`Could not destroy session ${id}:`, e.message);
+                    }
+                }
+                this.sessions.clear();
+                
                 await this.client.stop();
                 console.log("✓ Copilot client stopped");
             } catch (error) {
